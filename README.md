@@ -10,7 +10,9 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
 ### **Architecture Overview**  
 
 #### **High-Level Architecture Diagram**  
-![High-Level Architecture Diagram](#)  
+<p align="center">
+    <img src="assets/images/trips.jpg" alt="The architecture diagram" width="100%" />
+</p> 
 
 **Core Flow:**  
 1. **Data Ingestion:** Trip start and trip end events are published to Amazon Kinesis Data Streams.  
@@ -21,7 +23,9 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
 ---
 
 #### **Detailed Data Flow**  
-![Detailed Data Flow](#)  
+<p align="center">
+    <img src="assets/images/trips-data.jpg" alt="The architecture diagram" width="100%" />
+</p> 
 
 1. **Ingestion:**  
    - Trip start and trip end events are sent as JSON records to the Kinesis Data Stream.  
