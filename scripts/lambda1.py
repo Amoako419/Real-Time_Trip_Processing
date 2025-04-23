@@ -3,6 +3,7 @@ import boto3
 import os
 import base64
 from decimal import Decimal # Important for handling numbers in DynamoDB
+from datetime import datetime # To potentially parse timestamps if needed for sorting/logic
 
 # Initialize DynamoDB client
 dynamodb = boto3.client('dynamodb')
@@ -13,96 +14,156 @@ dynamodb = boto3.client('dynamodb')
 DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME')
 if not DYNAMODB_TABLE_NAME:
     print("Error: DYNAMODB_TABLE_NAME environment variable not set.")
-    # In a production scenario, you might want to raise an exception or handle this more robustly.
-    # For this example, we'll log and exit if the variable is missing.
     exit(1) # Exit if configuration is missing
 
 # --- Helper Function to Process a Single Kinesis Record ---
 def process_kinesis_record(record):
     """
-    Decodes and parses a single Kinesis record.
-    Returns the parsed data (Python dict) or None if parsing fails.
+    Decodes and parses a single Kinesis record based on the provided structure.
+    Returns the parsed data (Python dict) formatted for DynamoDB or None if parsing fails.
     """
     try:
         # Kinesis data is base64 encoded
-        # The actual data is under the 'data' key within the 'kinesis' key
         encoded_data = record['kinesis']['data']
         decoded_data = base64.b64decode(encoded_data).decode('utf-8')
-        # Assuming the data is a JSON string
+        # Assuming the data is a JSON string matching the provided examples
         parsed_data = json.loads(decoded_data)
 
-        # --- IMPORTANT: Adjust parsing based on your actual Kinesis data structure ---
-        # This is a placeholder. You need to extract the actual data you want to store.
-        # Example: If your Kinesis record is {'trip_id': 'abc', 'event_type': 'start', 'timestamp': '...', ...}
-        # you would prepare an item structure suitable for DynamoDB.
-
-        # Example: Prepare item structure for DynamoDB PutItem
-        # DynamoDB requires specific types (S, N, BOOL, etc.) and expects them nested.
-        # Numbers should be converted to Decimal.
-        # Partition Key (PK) and Sort Key (SK) design is CRITICAL for DynamoDB performance.
-        # A common pattern for related items like start/end is a Composite Primary Key:
-        # PK = trip_id (String)
-        # SK = event_type#timestamp (String) - or just timestamp if unique enough
-
+        # --- Extract key fields based on the provided structure ---
         trip_id = parsed_data.get('trip_id')
-        event_type = parsed_data.get('event_type') # e.g., 'trip_start', 'trip_end'
-        timestamp = parsed_data.get('timestamp') # Assuming a timestamp field
+        data_type = parsed_data.get('data_type') # 'trip_start' or 'trip_end'
 
-        if not trip_id or not event_type or not timestamp:
-            print(f"Skipping record due to missing required fields (trip_id, event_type, timestamp): {parsed_data}")
+        # Determine the primary timestamp field based on data_type
+        timestamp_str = None
+        if data_type == 'trip_start':
+            timestamp_str = parsed_data.get('pickup_datetime')
+        elif data_type == 'trip_end':
+            timestamp_str = parsed_data.get('dropoff_datetime')
+
+        if not trip_id or not data_type or not timestamp_str:
+            print(f"Skipping record due to missing required fields (trip_id, data_type, timestamp): {parsed_data}")
             return None # Skip records that don't have essential fields
 
         # --- Define your DynamoDB Item Structure ---
-        # This structure MUST match your table's primary key and attribute names.
         # Using 'PK' and 'SK' as example attribute names for the primary key.
         # Adjust these to match your actual table schema.
+        # PK = trip_id (String)
+        # SK = data_type#timestamp (String) - Using data_type to differentiate start/end with same trip_id/timestamp
+
         dynamodb_item = {
             'PK': {'S': str(trip_id)}, # Partition Key: trip_id (as String)
-            # Sort Key: Combine event_type and timestamp for uniqueness and ordering
-            'SK': {'S': f"{event_type}#{timestamp}"},
+            # Sort Key: Combine data_type and timestamp for uniqueness and ordering
+            'SK': {'S': f"{data_type}#{timestamp_str}"},
             'trip_id': {'S': str(trip_id)}, # Store trip_id as a separate attribute too
-            'event_type': {'S': event_type},
-            'timestamp': {'S': str(timestamp)}, # Store timestamp as String initially
+            'data_type': {'S': data_type}, # Store the event type
+            'timestamp': {'S': str(timestamp_str)}, # Store the primary timestamp as String
 
-            # Add other attributes from your parsed data, converting types as needed
-            # Example for a 'fare_amount' which is a number:
-            # 'fare_amount': {'N': str(parsed_data.get('fare_amount'))} # Convert number to string for 'N' type
-
-            # Example for other string attributes:
-            # 'pickup_location': {'S': parsed_data.get('pickup_location')},
-            # 'dropoff_location': {'S': parsed_data.get('dropoff_location')},
-
-            # Include the full raw data payload if useful for debugging or later processing
+            # Store the full raw data payload if useful for debugging or later processing
             'raw_data': {'S': decoded_data}
         }
 
-        # Add specific attributes based on event type
-        if event_type == 'trip_start':
-             # Add start-specific fields
-             pickup_location = parsed_data.get('pickup_location')
-             if pickup_location:
-                 dynamodb_item['pickup_location'] = {'S': str(pickup_location)}
-             # Add other start fields...
-        elif event_type == 'trip_end':
-             # Add end-specific fields
+        # --- Add specific attributes based on data_type ---
+        if data_type == 'trip_start':
+             # Add start-specific fields from the provided example
+             pickup_datetime = parsed_data.get('pickup_datetime')
+             if pickup_datetime is not None:
+                 dynamodb_item['pickup_datetime'] = {'S': str(pickup_datetime)}
+
+             pickup_location_id = parsed_data.get('pickup_location_id')
+             if pickup_location_id is not None:
+                 # Convert number to Decimal for 'N' type
+                 try:
+                     dynamodb_item['pickup_location_id'] = {'N': str(Decimal(str(pickup_location_id)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert pickup_location_id '{pickup_location_id}' to Decimal: {num_e}")
+                     # Decide how to handle non-numeric - skip or store as string? Skipping for now.
+
+             dropoff_location_id = parsed_data.get('dropoff_location_id')
+             if dropoff_location_id is not None:
+                 try:
+                     dynamodb_item['dropoff_location_id'] = {'N': str(Decimal(str(dropoff_location_id)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert dropoff_location_id '{dropoff_location_id}' to Decimal: {num_e}")
+
+             vendor_id = parsed_data.get('vendor_id')
+             if vendor_id is not None:
+                 try:
+                     dynamodb_item['vendor_id'] = {'N': str(Decimal(str(vendor_id)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert vendor_id '{vendor_id}' to Decimal: {num_e}")
+
+             estimated_dropoff_datetime = parsed_data.get('estimated_dropoff_datetime')
+             if estimated_dropoff_datetime is not None:
+                 dynamodb_item['estimated_dropoff_datetime'] = {'S': str(estimated_dropoff_datetime)}
+
+             estimated_fare_amount = parsed_data.get('estimated_fare_amount')
+             if estimated_fare_amount is not None:
+                 try:
+                     dynamodb_item['estimated_fare_amount'] = {'N': str(Decimal(str(estimated_fare_amount)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert estimated_fare_amount '{estimated_fare_amount}' to Decimal: {num_e}")
+
+
+        elif data_type == 'trip_end':
+             # Add end-specific fields from the provided example
+             dropoff_datetime = parsed_data.get('dropoff_datetime')
+             if dropoff_datetime is not None:
+                 dynamodb_item['dropoff_datetime'] = {'S': str(dropoff_datetime)}
+
+             rate_code = parsed_data.get('rate_code')
+             if rate_code is not None:
+                 try:
+                     dynamodb_item['rate_code'] = {'N': str(Decimal(str(rate_code)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert rate_code '{rate_code}' to Decimal: {num_e}")
+
+             payment_type = parsed_data.get('payment_type')
+             if payment_type is not None:
+                 try:
+                     dynamodb_item['payment_type'] = {'N': str(Decimal(str(payment_type)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert payment_type '{payment_type}' to Decimal: {num_e}")
+
              fare_amount = parsed_data.get('fare_amount')
-             if fare_amount is not None: # Check if fare_amount exists
-                 # Convert number to Decimal for DynamoDB 'N' type
+             if fare_amount is not None:
                  try:
                      dynamodb_item['fare_amount'] = {'N': str(Decimal(str(fare_amount)))}
                  except Exception as num_e:
                      print(f"Warning: Could not convert fare_amount '{fare_amount}' to Decimal: {num_e}")
-                     # Decide how to handle non-numeric fare_amount - skip or store as string?
-             dropoff_location = parsed_data.get('dropoff_location')
-             if dropoff_location:
-                 dynamodb_item['dropoff_location'] = {'S': str(dropoff_location)}
-             # Add other end fields...
+
+             trip_distance = parsed_data.get('trip_distance')
+             if trip_distance is not None:
+                 try:
+                     dynamodb_item['trip_distance'] = {'N': str(Decimal(str(trip_distance)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert trip_distance '{trip_distance}' to Decimal: {num_e}")
+
+             tip_amount = parsed_data.get('tip_amount')
+             if tip_amount is not None:
+                 try:
+                     dynamodb_item['tip_amount'] = {'N': str(Decimal(str(tip_amount)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert tip_amount '{tip_amount}' to Decimal: {num_e}")
+
+             trip_type = parsed_data.get('trip_type')
+             if trip_type is not None:
+                 try:
+                     dynamodb_item['trip_type'] = {'N': str(Decimal(str(trip_type)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert trip_type '{trip_type}' to Decimal: {num_e}")
+
+             passenger_count = parsed_data.get('passenger_count')
+             if passenger_count is not None:
+                 try:
+                     dynamodb_item['passenger_count'] = {'N': str(Decimal(str(passenger_count)))}
+                 except Exception as num_e:
+                     print(f"Warning: Could not convert passenger_count '{passenger_count}' to Decimal: {num_e}")
+
 
         return dynamodb_item # Return the formatted DynamoDB item
 
     except (json.JSONDecodeError, base64.binascii.Error, KeyError) as e:
         print(f"Error decoding or parsing Kinesis record: {e}")
-        # Log the error and return None to indicate failure for this record
         return None
     except Exception as e:
         print(f"An unexpected error occurred while processing Kinesis record: {e}")
@@ -178,7 +239,7 @@ def batch_write_to_dynamodb(table_name, items):
 def lambda_handler(event, context):
     """
     AWS Lambda handler for processing Kinesis Data Streams batches.
-    Parses records and writes them to DynamoDB.
+    Parses records based on provided structure and writes them to DynamoDB.
     """
     print(f"Received Kinesis event with {len(event['Records'])} records.")
 
