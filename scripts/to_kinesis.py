@@ -34,45 +34,54 @@ def load_and_sort_data(start_path, end_path):
     
     return trip_start_sorted, trip_end_sorted
 
-def send_trip_start_to_kinesis(data, stream_name, region='eu-west-1', delay=30):
+def send_paired_data_to_kinesis(start_data, end_data, stream_name, region='eu-west-1', delay=30):
     kinesis_client = boto3.client('kinesis', region_name=region)
     
-    for _, row in data.iterrows():
-        # Convert row to JSON string
-        record = row.to_dict()
-        record['pickup_datetime'] = str(record['pickup_datetime'])  # Convert timestamp to string
-        data_json = json.dumps(record)
-        
-        try:
-            response = kinesis_client.put_record(
-                StreamName=stream_name,
-                Data=data_json,
-                PartitionKey=str(row.name)  # Using row index as partition key
-            )
-            print(f"Successfully sent trip start record to Kinesis: {response['SequenceNumber']}")
-        except Exception as e:
-            print(f"Error sending trip start record to Kinesis: {e}")
-        
-        time.sleep(delay)
-
-def send_trip_end_to_kinesis(data, stream_name, region='eu-west-1', delay=30):
-    kinesis_client = boto3.client('kinesis', region_name=region)
+    # Pair start and end data by trip_id
+    paired_data = pd.merge(start_data, end_data, on='trip_id', suffixes=('_start', '_end'))
     
-    for _, row in data.iterrows():
-        # Convert row to JSON string
-        record = row.to_dict()
-        record['dropoff_datetime'] = str(record['dropoff_datetime'])  # Convert timestamp to string
-        data_json = json.dumps(record)
-        
+    for _, row in paired_data.iterrows():
         try:
-            response = kinesis_client.put_record(
+            # Send trip start record
+            start_record = {
+                'trip_id': row['trip_id'],
+                'pickup_datetime': str(row['pickup_datetime']),
+                'data_type': 'start',
+                'pickup_location_id': row['pickup_location_id'],
+                'dropoff_location_id': row['dropoff_location_id'],
+                'vendor_id': row['vendor_id'],
+                'estimated_dropoff_datetime': str(row['estimated_dropoff_datetime']),
+                'estimated_fare_amount': row['estimated_fare_amount']
+            }
+            start_response = kinesis_client.put_record(
                 StreamName=stream_name,
-                Data=data_json,
-                PartitionKey=str(row.name)  # Using row index as partition key
+                Data=json.dumps(start_record),
+                PartitionKey=str(row['trip_id'])
             )
-            print(f"Successfully sent trip end record to Kinesis: {response['SequenceNumber']}")
+            print(f"Successfully sent trip start record to Kinesis: {start_response['SequenceNumber']}")
+            
+            # Send trip end record
+            end_record = {
+                'trip_id': row['trip_id'],
+                'dropoff_datetime': str(row['dropoff_datetime']),
+                'data_type': 'end',
+                'rate_code': row['rate_code'],
+                'payment_type': row['payment_type'],
+                'fare_amount': row['fare_amount'],
+                'trip_distance': row['trip_distance'],
+                'tip_amount': row['tip_amount'],
+                'trip_type': row['trip_type'],
+                'passenger_count': row['passenger_count']
+            }
+            end_response = kinesis_client.put_record(
+                StreamName=stream_name,
+                Data=json.dumps(end_record),
+                PartitionKey=str(row['trip_id'])
+            )
+            print(f"Successfully sent trip end record to Kinesis: {end_response['SequenceNumber']}")
+            
         except Exception as e:
-            print(f"Error sending trip end record to Kinesis: {e}")
+            print(f"Error sending paired records to Kinesis: {e}")
         
         time.sleep(delay)
 
@@ -86,11 +95,8 @@ def main():
         # Load and sort trip start and trip end data separately
         trip_start_data, trip_end_data = load_and_sort_data(start_data_path, end_data_path)
         
-        # Send trip start data to Kinesis
-        send_trip_start_to_kinesis(trip_start_data, stream_name)
-        
-        # Send trip end data to Kinesis
-        send_trip_end_to_kinesis(trip_end_data, stream_name)
+        # Send paired trip start and trip end data to Kinesis
+        send_paired_data_to_kinesis(trip_start_data, trip_end_data, stream_name)
         
     except Exception as e:
         print(f"Error processing data: {e}")
