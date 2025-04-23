@@ -199,6 +199,16 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
    - After the Glue job completes successfully, check your specified S3 bucket and path for the `daily_trip_kpis.csv` file containing the aggregated results.  
 
 ---
+## 🏗️ AWS Step Functions Workflow
+
+<p align="center">
+    <img src="assets/images/stepfunctions.svg" alt="The architecture diagram" width="100%" />
+</p>
+
+- **Script location**: `glue_scripts/step_functions.py`
+
+
+----
 
 ### **KPI Calculation**  
 
