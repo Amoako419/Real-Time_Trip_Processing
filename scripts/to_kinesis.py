@@ -35,7 +35,7 @@ def load_and_sort_data(start_path, end_path):
     
     return trip_start_sorted, trip_end_sorted
 
-def send_data_to_kinesis(data, stream_name, region='eu-west-1', delay=0.1):
+def send_data_to_kinesis(data, stream_name, region='eu-west-1', delay=1):
     """
     Sends individual records to Kinesis with proper separation between start and end events.
     """
@@ -110,18 +110,7 @@ def main():
         trip_start_data, trip_end_data = load_and_sort_data(start_data_path, end_data_path)
         
         print(f"Loaded {len(trip_start_data)} trip start records and {len(trip_end_data)} trip end records")
-        
-        # Option 1: Send start data first, then end data (default)
-        # This ensures cleaner separation between event types
-        '''
-        print("Sending trip start records...")
-        send_data_to_kinesis(trip_start_data, stream_name)
-        
-        print("Sending trip end records...")
-        send_data_to_kinesis(trip_end_data, stream_name)
-        '''
-        
-        # Option 2: Uncomment to send mixed data (time-ordered blend of start and end)
+    
         # Only use if you specifically need interleaved start/end events
         
         # Combine and sort all data by timestamp
