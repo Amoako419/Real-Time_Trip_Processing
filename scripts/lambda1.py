@@ -2,31 +2,33 @@ import json
 import boto3
 import os
 import base64
-from decimal import Decimal # Important for handling numbers in DynamoDB
-from datetime import datetime # To potentially parse timestamps if needed for sorting/logic
+from decimal import Decimal, InvalidOperation
+from datetime import datetime
 
 # Initialize DynamoDB client
 dynamodb = boto3.client('dynamodb')
 
 # --- Configuration ---
 # Get DynamoDB table name from environment variables
-# This is the main table where raw start/end events will be stored initially
 DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME')
 if not DYNAMODB_TABLE_NAME:
     print("Error: DYNAMODB_TABLE_NAME environment variable not set.")
-    exit(1) # Exit if configuration is missing
+    exit(1)
 
 # --- Helper Function to Process a Single Kinesis Record ---
 def process_kinesis_record(record):
     """
-    Decodes and parses a single Kinesis record based on the provided structure.
-    Returns the parsed data (Python dict) formatted for DynamoDB or None if parsing fails.
+    Decodes and parses a single Kinesis record.
+    Returns the parsed data (Python dict) formatted for DynamoDB using the RAW# SK prefix,
+    or None if parsing fails. Includes improved error handling for numeric conversions.
     """
     try:
-        # Kinesis data is base64 encoded
+        if 'kinesis' not in record or 'data' not in record['kinesis']:
+             print(f"Skipping record: Missing 'kinesis' or 'data' key in record structure: {record}")
+             return None
+
         encoded_data = record['kinesis']['data']
         decoded_data = base64.b64decode(encoded_data).decode('utf-8')
-        # Assuming the data is a JSON string matching the provided examples
         parsed_data = json.loads(decoded_data)
 
         # --- Extract key fields based on the provided structure ---
@@ -42,122 +44,51 @@ def process_kinesis_record(record):
 
         if not trip_id or not data_type or not timestamp_str:
             print(f"Skipping record due to missing required fields (trip_id, data_type, timestamp): {parsed_data}")
-            return None # Skip records that don't have essential fields
+            return None
 
-        # --- Define your DynamoDB Item Structure ---
-        # Using 'PK' and 'SK' as example attribute names for the primary key.
-        # Adjust these to match your actual table schema.
+        # --- Define your DynamoDB Item Structure for RAW events ---
         # PK = trip_id (String)
-        # SK = data_type#timestamp (String) - Using data_type to differentiate start/end with same trip_id/timestamp
+        # SK = RAW#{data_type}#{timestamp} (String)
 
         dynamodb_item = {
             'PK': {'S': str(trip_id)}, # Partition Key: trip_id (as String)
-            # Sort Key: Combine data_type and timestamp for uniqueness and ordering
-            'SK': {'S': f"{data_type}#{timestamp_str}"},
-            'trip_id': {'S': str(trip_id)}, # Store trip_id as a separate attribute too
+            # Sort Key: RAW prefix + data_type + timestamp for uniqueness and state identification
+            'SK': {'S': f"RAW#{data_type}#{timestamp_str}"},
+            'trip_id': {'S': str(trip_id)}, # Store trip_id as a separate attribute
             'data_type': {'S': data_type}, # Store the event type
-            'timestamp': {'S': str(timestamp_str)}, # Store the primary timestamp as String
-
-            # Store the full raw data payload if useful for debugging or later processing
-            'raw_data': {'S': decoded_data}
+            # Add a status field to indicate this is a raw event
+            'status': {'S': 'raw'}
         }
 
-        # --- Add specific attributes based on data_type ---
-        if data_type == 'trip_start':
-             # Add start-specific fields from the provided example
-             pickup_datetime = parsed_data.get('pickup_datetime')
-             if pickup_datetime is not None:
-                 dynamodb_item['pickup_datetime'] = {'S': str(pickup_datetime)}
+        # --- Add all attributes from the parsed data ---
+        # Iterate through all key-value pairs in the parsed data and add them
+        # to the DynamoDB item, handling types.
+        for key, value in parsed_data.items():
+            # Skip keys already used for PK, SK, trip_id, data_type, raw_data, status
+            if key in ['trip_id', 'data_type']:
+                continue
 
-             pickup_location_id = parsed_data.get('pickup_location_id')
-             if pickup_location_id is not None:
-                 # Convert number to Decimal for 'N' type
+            # Handle numeric values specifically
+            if isinstance(value, (int, float)):
                  try:
-                     dynamodb_item['pickup_location_id'] = {'N': str(Decimal(str(pickup_location_id)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert pickup_location_id '{pickup_location_id}' to Decimal: {num_e}")
-                     # Decide how to handle non-numeric - skip or store as string? Skipping for now.
+                     decimal_value = Decimal(str(value))
+                     if decimal_value.is_nan() or decimal_value.is_infinite():
+                         print(f"Warning: Skipping attribute '{key}' for trip ID '{trip_id}' due to invalid numeric value (NaN/Infinity): {value}")
+                         continue # Skip this attribute
+                     else:
+                         dynamodb_item[key] = {'N': str(decimal_value)} # Store as 'N' type
+                 except (InvalidOperation, ValueError, TypeError) as e:
+                     print(f"Warning: Could not convert '{key}' value '{value}' to Decimal for trip ID '{trip_id}': {e}. Skipping attribute.")
+                     continue # Skip the attribute if conversion fails
+            elif isinstance(value, bool):
+                 dynamodb_item[key] = {'BOOL': value}
+            elif value is None:
+                 dynamodb_item[key] = {'NULL': True}
+            else: # Assume string or other types that can be stored as String
+                 dynamodb_item[key] = {'S': str(value)} # Store as 'S' type
 
-             dropoff_location_id = parsed_data.get('dropoff_location_id')
-             if dropoff_location_id is not None:
-                 try:
-                     dynamodb_item['dropoff_location_id'] = {'N': str(Decimal(str(dropoff_location_id)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert dropoff_location_id '{dropoff_location_id}' to Decimal: {num_e}")
-
-             vendor_id = parsed_data.get('vendor_id')
-             if vendor_id is not None:
-                 try:
-                     dynamodb_item['vendor_id'] = {'N': str(Decimal(str(vendor_id)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert vendor_id '{vendor_id}' to Decimal: {num_e}")
-
-             estimated_dropoff_datetime = parsed_data.get('estimated_dropoff_datetime')
-             if estimated_dropoff_datetime is not None:
-                 dynamodb_item['estimated_dropoff_datetime'] = {'S': str(estimated_dropoff_datetime)}
-
-             estimated_fare_amount = parsed_data.get('estimated_fare_amount')
-             if estimated_fare_amount is not None:
-                 try:
-                     dynamodb_item['estimated_fare_amount'] = {'N': str(Decimal(str(estimated_fare_amount)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert estimated_fare_amount '{estimated_fare_amount}' to Decimal: {num_e}")
-
-
-        elif data_type == 'trip_end':
-             # Add end-specific fields from the provided example
-             dropoff_datetime = parsed_data.get('dropoff_datetime')
-             if dropoff_datetime is not None:
-                 dynamodb_item['dropoff_datetime'] = {'S': str(dropoff_datetime)}
-
-             rate_code = parsed_data.get('rate_code')
-             if rate_code is not None:
-                 try:
-                     dynamodb_item['rate_code'] = {'N': str(Decimal(str(rate_code)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert rate_code '{rate_code}' to Decimal: {num_e}")
-
-             payment_type = parsed_data.get('payment_type')
-             if payment_type is not None:
-                 try:
-                     dynamodb_item['payment_type'] = {'N': str(Decimal(str(payment_type)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert payment_type '{payment_type}' to Decimal: {num_e}")
-
-             fare_amount = parsed_data.get('fare_amount')
-             if fare_amount is not None:
-                 try:
-                     dynamodb_item['fare_amount'] = {'N': str(Decimal(str(fare_amount)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert fare_amount '{fare_amount}' to Decimal: {num_e}")
-
-             trip_distance = parsed_data.get('trip_distance')
-             if trip_distance is not None:
-                 try:
-                     dynamodb_item['trip_distance'] = {'N': str(Decimal(str(trip_distance)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert trip_distance '{trip_distance}' to Decimal: {num_e}")
-
-             tip_amount = parsed_data.get('tip_amount')
-             if tip_amount is not None:
-                 try:
-                     dynamodb_item['tip_amount'] = {'N': str(Decimal(str(tip_amount)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert tip_amount '{tip_amount}' to Decimal: {num_e}")
-
-             trip_type = parsed_data.get('trip_type')
-             if trip_type is not None:
-                 try:
-                     dynamodb_item['trip_type'] = {'N': str(Decimal(str(trip_type)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert trip_type '{trip_type}' to Decimal: {num_e}")
-
-             passenger_count = parsed_data.get('passenger_count')
-             if passenger_count is not None:
-                 try:
-                     dynamodb_item['passenger_count'] = {'N': str(Decimal(str(passenger_count)))}
-                 except Exception as num_e:
-                     print(f"Warning: Could not convert passenger_count '{passenger_count}' to Decimal: {num_e}")
+        # Add a timestamp for when this record was processed by Lambda 1
+        dynamodb_item['processing_timestamp_lambda1'] = {'S': datetime.utcnow().isoformat()}
 
 
         return dynamodb_item # Return the formatted DynamoDB item
@@ -175,6 +106,7 @@ def batch_write_to_dynamodb(table_name, items):
     Writes a list of items to DynamoDB using batch_write_item.
     Handles the 25 item limit per batch request.
     Implements basic retry for unprocessed items.
+    Filters for duplicate PK/SK within the batch before writing.
     """
     if not table_name:
         print("DynamoDB table name not configured. Cannot write items.")
@@ -184,87 +116,126 @@ def batch_write_to_dynamodb(table_name, items):
         print("No items to write to DynamoDB.")
         return
 
-    print(f"Attempting to write {len(items)} items to {table_name} in batches.")
+    # --- Enhanced duplicate detection and filtering ---
+    # Create a dictionary to hold unique items by their PK+SK key
+    unique_items_dict = {}
+    duplicate_count = 0
+    
+    for item in items:
+        # Extract PK and SK values, ensuring we handle potential missing keys
+        pk_val = item.get('PK', {}).get('S')
+        sk_val = item.get('SK', {}).get('S')
+        
+        if pk_val is None or sk_val is None:
+            print(f"Warning: Skipping item due to missing PK or SK: {item}")
+            continue
+            
+        # Create a unique key string
+        item_key = f"{pk_val}#{sk_val}"
+        
+        # Only keep the first occurrence of each unique key
+        if item_key not in unique_items_dict:
+            unique_items_dict[item_key] = item
+        else:
+            duplicate_count += 1
+            print(f"Warning: Detected duplicate item with key: {item_key}")
+    
+    # Convert dictionary values back to a list
+    unique_items = list(unique_items_dict.values())
 
-    unprocessed_items = list(items) # Start with all items as potentially unprocessed
-    retry_count = 0
-    max_retries = 3 # Define maximum retry attempts
+    if not unique_items:
+        print("No valid items to write to DynamoDB after filtering duplicates.")
+        return
 
-    while unprocessed_items and retry_count < max_retries:
-        request_items = {
-            table_name: [
-                {'PutRequest': {'Item': item}} for item in unprocessed_items[:25] # Take up to 25 items
-            ]
-        }
-        items_in_current_batch = unprocessed_items[:25]
+    print(f"Preparing to write {len(unique_items)} unique items to DynamoDB ({duplicate_count} duplicates filtered out).")
 
-        try:
-            response = dynamodb.batch_write_item(
-                RequestItems=request_items
-            )
-
-            # Check the response for unprocessed items
-            unprocessed_in_response = response.get('UnprocessedItems', {}).get(table_name, [])
-
-            if unprocessed_in_response:
-                print(f"Warning: {len(unprocessed_in_response)} unprocessed items in batch {retry_count}. Retrying...")
-                # Replace unprocessed_items with the list from the response for the next retry
-                unprocessed_items = [req['PutRequest']['Item'] for req in unprocessed_in_response]
+    # Process items in batches of 25 (DynamoDB limit)
+    for i in range(0, len(unique_items), 25):
+        batch = unique_items[i:i+25]
+        retry_count = 0
+        max_retries = 3
+        items_to_retry = batch
+        
+        while items_to_retry and retry_count < max_retries:
+            try:
+                # Prepare the batch write request
+                request_items = {
+                    table_name: [{'PutRequest': {'Item': item}} for item in items_to_retry]
+                }
+                
+                # Execute the batch write
+                response = dynamodb.batch_write_item(RequestItems=request_items)
+                
+                # Check for unprocessed items
+                unprocessed = response.get('UnprocessedItems', {}).get(table_name, [])
+                
+                if unprocessed:
+                    items_to_retry = [item['PutRequest']['Item'] for item in unprocessed]
+                    print(f"Batch {i//25}: {len(items_to_retry)} items unprocessed. Retrying... (attempt {retry_count+1}/{max_retries})")
+                    retry_count += 1
+                else:
+                    print(f"Batch {i//25}: Successfully wrote {len(batch)} items to DynamoDB.")
+                    break
+                    
+            except Exception as e:
+                print(f"Error during batch_write_item to {table_name} (Batch {i//25}, Retry {retry_count}): {e}")
+                
+                # Print the item keys that might be causing issues
+                for item in items_to_retry:
+                    pk = item.get('PK', {}).get('S', 'unknown')
+                    sk = item.get('SK', {}).get('S', 'unknown')
+                    print(f"  - Key: {pk}#{sk}")
+                
                 retry_count += 1
-                # Add a delay before retrying in a real application (e.g., time.sleep)
-            else:
-                # If no unprocessed items in the response, these items were processed.
-                # Remove the processed items from the unprocessed_items list.
-                processed_count = len(items_in_current_batch) - len(unprocessed_in_response)
-                unprocessed_items = unprocessed_items[len(items_in_current_batch):]
-                print(f"Successfully processed {processed_count} items in batch {retry_count}.")
-                if not unprocessed_items:
-                     print("All items processed successfully.")
-                     break # Exit the loop if all items are processed
-
-        except Exception as e:
-            print(f"Error during batch_write_item to {table_name} (Retry {retry_count}): {e}")
-            # Log the error. Depending on your strategy, you might stop,
-            # send the whole batch to a DLQ, or let the Kinesis Lambda retry mechanism handle it.
-            # For now, we'll break the retry loop on unexpected errors.
-            break
-
-    if unprocessed_items:
-        print(f"After {max_retries} retries, {len(unprocessed_items)} items remain unprocessed.")
-        # Implement logic to handle these failures (e.g., log them prominently,
-        # send to a Dead Letter Queue configured for the Lambda).
+                
+                # If it's a validation exception related to duplicates, do additional logging
+                if "ValidationException" in str(e) and "duplicates" in str(e):
+                    # Create a temporary set to check for duplicates within this batch
+                    keys_in_batch = set()
+                    for item in items_to_retry:
+                        pk = item.get('PK', {}).get('S', '')
+                        sk = item.get('SK', {}).get('S', '')
+                        key = f"{pk}#{sk}"
+                        if key in keys_in_batch:
+                            print(f"  ERROR: Found duplicate key in current batch: {key}")
+                        keys_in_batch.add(key)
+                
+                # If we've hit max retries, log and continue to next batch
+                if retry_count >= max_retries:
+                    print(f"Batch {i//25}: Giving up after {max_retries} retries. {len(items_to_retry)} items remain unprocessed.")
 
 # --- Main Lambda Handler ---
 
 def lambda_handler(event, context):
     """
     AWS Lambda handler for processing Kinesis Data Streams batches.
-    Parses records based on provided structure and writes them to DynamoDB.
+    Parses records, formats them for DynamoDB with RAW# SK prefix,
+    filters duplicates, and writes them to DynamoDB.
+    Includes basic check for expected Kinesis event structure.
     """
+    if 'Records' not in event or not isinstance(event['Records'], list):
+        print("Error: Invalid event structure. Expected a Kinesis event with a 'Records' list.")
+        print(f"Received event: {json.dumps(event)}")
+        return {
+            'statusCode': 200,
+            'body': json.dumps('Invalid event structure received.')
+        }
+
     print(f"Received Kinesis event with {len(event['Records'])} records.")
 
     items_for_dynamodb = []
 
-    # Process each record in the batch
     for record in event['Records']:
         dynamodb_item = process_kinesis_record(record)
         if dynamodb_item:
             items_for_dynamodb.append(dynamodb_item)
-        # Note: process_kinesis_record handles logging for skipped/failed records
 
-    # Write the prepared items to DynamoDB in batches
     if items_for_dynamodb:
         batch_write_to_dynamodb(DYNAMODB_TABLE_NAME, items_for_dynamodb)
     else:
         print("No valid items to write to DynamoDB from this batch.")
 
-    # Kinesis Lambda functions typically return a response indicating success/failure
-    # of processing the batch. Returning an empty success response is common,
-    # but you can also return a partial batch success response if configured.
-    # For simplicity here, we assume full batch success if no exceptions were raised
-    # that stopped execution. UnprocessedItems handling is within batch_write_to_dynamodb.
     return {
         'statusCode': 200,
         'body': json.dumps('Kinesis batch processing and initial loading complete!')
     }
-
