@@ -47,7 +47,11 @@ def send_paired_data_to_kinesis(start_data, end_data, stream_name, region='eu-we
                 'trip_id': row['trip_id'],
                 'pickup_datetime': str(row['pickup_datetime']),
                 'data_type': 'start',
-                # Add other relevant fields from start_data
+                'pickup_location_id': row['pickup_location_id'],
+                'dropoff_location_id': row['dropoff_location_id'],
+                'vendor_id': row['vendor_id'],
+                'estimated_dropoff_datetime': str(row['estimated_dropoff_datetime']),
+                'estimated_fare_amount': row['estimated_fare_amount']
             }
             start_response = kinesis_client.put_record(
                 StreamName=stream_name,
@@ -61,7 +65,13 @@ def send_paired_data_to_kinesis(start_data, end_data, stream_name, region='eu-we
                 'trip_id': row['trip_id'],
                 'dropoff_datetime': str(row['dropoff_datetime']),
                 'data_type': 'end',
-                # Add other relevant fields from end_data
+                'rate_code': row['rate_code'],
+                'payment_type': row['payment_type'],
+                'fare_amount': row['fare_amount'],
+                'trip_distance': row['trip_distance'],
+                'tip_amount': row['tip_amount'],
+                'trip_type': row['trip_type'],
+                'passenger_count': row['passenger_count']
             }
             end_response = kinesis_client.put_record(
                 StreamName=stream_name,
