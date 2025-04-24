@@ -73,9 +73,11 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
 
 2. **AWS Lambda:**  
    - **Lambda Function 1 (Kinesis Reader & Raw Data Loader):**  
-     - Reads from Kinesis, parses raw events, validates/cleans numeric data, and loads raw events into DynamoDB.  
+     - Reads from Kinesis, parses raw events, validates/cleans numeric data, and loads raw events into DynamoDB.
+     - **Script location**: `scripts/lambda1.py`  
    - **Lambda Function 2 (Matcher & Completed Trip Creator):**  
      - Triggered by DynamoDB Streams, finds matching `RAW#` start and end events, merges their data, and creates a new `COMPLETED#` item in the same DynamoDB table.  
+     - **Script location**: `scripts/lambda2.py` 
 
 3. **Amazon DynamoDB:**  
    - Single table used to store both raw individual trip start/end events (`RAW#` items) and processed, complete trip records (`COMPLETED#` items).  
@@ -88,11 +90,13 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
      ```  
 
 4. **AWS Glue:**  
-   - Python Shell job reads processed trip data (`COMPLETED#` items) from DynamoDB, calculates daily KPIs, and writes the results to S3.  
+   - Python Shell job reads processed trip data (`COMPLETED#` items) from DynamoDB, calculates daily KPIs, and writes the results to S3.
+   - **Script location**: `scripts/glue_scripts.py`   
 
 5. **Amazon S3:**  
    - Stores the final aggregated KPI results as a CSV file.  
    - Output path example: `kpi_results/daily_trip_kpis.csv`.  
+   - Output : ` data/kpi_results/2025-04-24-12-02-04-daily_trip_kpis.json`
 
 ---
 
@@ -199,13 +203,13 @@ The pipeline ensures real-time data ingestion, efficient storage and processing 
    - After the Glue job completes successfully, check your specified S3 bucket and path for the `daily_trip_kpis.csv` file containing the aggregated results.  
 
 ---
-## 🏗️ AWS Step Functions Workflow
+##  AWS Step Functions Workflow
 
 <p align="center">
-    <img src="assets/images/stepfunctions.svg" alt="The architecture diagram" width="100%" />
+    <img src="assets/images/stepfunctions.svg" alt="The architecture diagram" width="30%" />
 </p>
 
-- **Script location**: `glue_scripts/step_functions.py`
+- **Script location**: `scripts/step_functions.json`
 
 
 ----
@@ -237,5 +241,5 @@ This comprehensive serverless pipeline efficiently processes streaming trip data
 
 Feel free to reach out if you have any questions or need further assistance!  
 
----  
+ 
 
