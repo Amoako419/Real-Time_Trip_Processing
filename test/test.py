@@ -11,7 +11,6 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 # Import the script to test
-# Assuming the script is saved as trip_kpi_generator.py
 import glue_scripts as script
 
 class TestTripKpiGenerator:
@@ -91,26 +90,27 @@ class TestTripKpiGenerator:
     def test_scan_dynamodb_table(self, mock_boto3_clients, sample_dynamodb_items):
         """Test scanning DynamoDB table"""
         # Configure mock response
-        mock_boto3_clients.mock_dynamodb.scan.side_effect = [
+        mock_dynamodb = mock_boto3_clients.client('dynamodb')
+        mock_dynamodb.scan.side_effect = [
             {
                 'Items': sample_dynamodb_items[:2],
                 'LastEvaluatedKey': {'trip_id': {'S': 'trip2'}}
             },
             {
-                'Items': sample_dynamodb_items[2:]
+                'Items': sample_dynamodb_items[2:],
+                'LastEvaluatedKey': None
             }
         ]
         
         # Call the function
         result = script.scan_dynamodb_table('trips')
         
-        # Get actual calls made to scan
-        actual_calls = mock_boto3_clients.mock_dynamodb.scan.call_args_list
-        
-        # Verify the calls were made correctly
-        assert len(actual_calls) == 2  # Changed from 5 to 2
-        assert actual_calls[0] == call(TableName='trips')
-        assert actual_calls[1] == call(TableName='trips', ExclusiveStartKey={'trip_id': {'S': 'trip2'}})
+        # Verify scan was called correctly
+        assert mock_dynamodb.scan.call_count == 2
+        mock_dynamodb.scan.assert_has_calls([
+            call(TableName='trips'),
+            call(TableName='trips', ExclusiveStartKey={'trip_id': {'S': 'trip2'}})
+        ])
         
         # Verify the result has the correct number of items
         assert len(result) == 4
@@ -123,34 +123,38 @@ class TestTripKpiGenerator:
 
     def test_main_script_processing(self, mock_boto3_clients, expected_processed_items):
         """Test the main script logic using mocked data"""
-        # Configure test data and mocks
-        test_data = {
-            'metadata': {'source_table': 'trips', 'record_count': 4},
-            'daily_kpis': [{'date': '2025-04-24', 'total_fares': 100}]
-        }
-
+        # Configure mocks
+        mock_s3 = mock_boto3_clients.client('s3')
+        
         with patch('glue_scripts.scan_dynamodb_table', return_value=expected_processed_items):
-            with patch('glue_scripts.process_data', return_value=test_data):
-                # Mock datetime.now() to return a fixed date for testing
-                fixed_date = datetime(2025, 4, 24, 12, 0, 0)
-                with patch('glue_scripts.datetime') as mock_datetime:
-                    mock_datetime.now.return_value = fixed_date
-                    mock_datetime.strftime = datetime.strftime
-                    mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
-
-                    # Mock S3 put_object to simulate file upload
-                    mock_boto3_clients.mock_s3.put_object.return_value = {'ResponseMetadata': {'HTTPStatusCode': 200}}
-
-                    # Execute the main script
-                    with patch.object(sys, 'argv', ['glue_scripts.py']):
-                        with patch('builtins.print'):  # Suppress print statements
-                            script.main()
-
-                    # Verify S3 upload
-                    mock_boto3_clients.mock_s3.put_object.assert_called_once()
-                    _, kwargs = mock_boto3_clients.mock_s3.put_object.call_args
-                    assert kwargs['Bucket'] == 'trips-kpis-buckets-125'
-                    assert kwargs['ContentType'] == 'application/json'
+            # Mock datetime.now() to return a fixed date for testing
+            fixed_date = datetime(2025, 4, 24, 12, 0, 0)
+            with patch('glue_scripts.datetime') as mock_datetime:
+                mock_datetime.now.return_value = fixed_date
+                mock_datetime.strftime = datetime.strftime
+                mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
+                
+                # Execute the main script
+                with patch.object(sys, 'argv', ['glue_scripts.py']):
+                    with patch('builtins.print'):  # Suppress print statements
+                        script.main()  # Assuming the script has a main() function that encapsulates the __main__ block
+                
+                # Check S3 upload was called with correct data
+                assert mock_s3.put_object.call_count == 2  # Main file and latest copy
+                
+                # Verify the first S3 put_object (timestamped file)
+                args, kwargs = mock_s3.put_object.call_args_list[0]
+                assert kwargs['Bucket'] == 'trips-kpis-buckets-125'
+                assert 'daily_kpis/2025/04/24/2025-04-24' in kwargs['Key']
+                assert kwargs['ContentType'] == 'application/json'
+                
+                # Verify the JSON content structure
+                json_content = json.loads(kwargs['Body'])
+                assert 'metadata' in json_content
+                assert 'daily_kpis' in json_content
+                assert json_content['metadata']['source_table'] == 'trips'
+                assert json_content['metadata']['record_count'] == 4
+                assert len(json_content['daily_kpis']) == 2  # 2 unique days in our test data
 
     def test_dataframe_processing(self, expected_processed_items):
         """Test the pandas DataFrame processing and KPI calculations"""
