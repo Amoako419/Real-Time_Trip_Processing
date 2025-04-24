@@ -228,28 +228,6 @@ The KPI results for the last day..
     <img src="assets/images/query-image.png" alt="The architecture diagram" width="100%" />
 </p> 
 
-### **Future Improvements**  
-
-1. **Dead Letter Queue (DLQ):**  
-   - Implement a DLQ for Lambda functions to handle processing failures gracefully.  
-
-2. **Robust Error Handling and Logging:**  
-   - Enhance error handling and logging in Lambda functions and the Glue job.  
-
-3. **Handling Partial Trips:**  
-   - Implement a mechanism to handle partial trips (raw items that never get a counterpart).  
-
-4. **Optimize DynamoDB Schema and Query:**  
-   - Optimize the DynamoDB schema and Lambda 2 Query for very high throughput scenarios.  
-
-5. **Use Glue PySpark:**  
-   - Consider using Glue PySpark for aggregation if the data volume in DynamoDB becomes very large.  
-
-6. **Automated Deployment:**  
-   - Use AWS CloudFormation or AWS CDK for automated deployment.  
-
-7. **Monitoring and Alerting:**  
-   - Implement monitoring and alerting for pipeline health and data quality.  
 
 ---
 
