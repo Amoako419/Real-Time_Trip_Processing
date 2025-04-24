@@ -222,6 +222,12 @@ The Glue script calculates the following daily KPIs based on the `COMPLETED#` it
 
 ---
 
+### Athena Queries 
+The KPI results for the last day..
+<p align="center">
+    <img src="assets/images/query-image.png" alt="The architecture diagram" width="100%" />
+</p> 
+
 ### **Future Improvements**  
 
 1. **Dead Letter Queue (DLQ):**  
