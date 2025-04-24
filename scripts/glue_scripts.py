@@ -2,6 +2,7 @@ import boto3
 import pandas as pd
 import io
 import os
+import json
 from datetime import datetime
 
 # --- Configuration ---
@@ -10,7 +11,17 @@ DYNAMODB_TABLE_NAME = 'trips'
 
 # Replace with your S3 bucket name and desired output file path
 S3_BUCKET_NAME = 'trips-kpis-buckets-125'
-S3_OUTPUT_KEY = f'daily_kpis/{datetime.now().day}-daily_trip_kpis.csv'
+
+# Create a better organized path with full timestamp for efficient access
+# Format: daily_kpis/YEAR/MONTH/DAY/YYYY-MM-DD-HH-MM-SS-daily_trip_kpis.json
+now = datetime.now()
+year = now.strftime("%Y")
+month = now.strftime("%m")
+day = now.strftime("%d")
+timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
+
+# Organize in a hierarchical structure for efficient access
+S3_OUTPUT_KEY = f'daily_kpis/{year}/{month}/{day}/{timestamp}-daily_trip_kpis.json'
 
 # --- AWS Clients ---
 dynamodb = boto3.client('dynamodb')
@@ -21,9 +32,6 @@ def scan_dynamodb_table(table_name):
     """
     Scans a DynamoDB table and returns all items.
     Handles pagination automatically.
-    Note: Scanning can be inefficient for large tables.
-          For very large tables, consider using Glue PySpark or
-          exporting DynamoDB data to S3 first.
     """
     print(f"Scanning DynamoDB table: {table_name}")
     items = []
@@ -78,14 +86,14 @@ def scan_dynamodb_table(table_name):
 
 # --- Main Script Logic ---
 if __name__ == "__main__":
-    # 1. Read data from DynamoDB
+    # Read data from DynamoDB
     dynamodb_items = scan_dynamodb_table(DYNAMODB_TABLE_NAME)
 
     if not dynamodb_items:
         print("No data retrieved from DynamoDB or an error occurred. Exiting.")
         exit() # Exit the script if no data
 
-    # 2. Load data into Pandas DataFrame
+    # Load data into Pandas DataFrame
     try:
         df = pd.DataFrame(dynamodb_items)
         print(f"Loaded {len(df)} items into Pandas DataFrame.")
@@ -119,7 +127,7 @@ if __name__ == "__main__":
         print(f"Error creating Pandas DataFrame or processing columns: {e}")
         exit()
 
-    # 3. Calculate KPIs using the user's logic
+    # Calculate KPIs using the user's logic
     try:
         print("Calculating KPIs...")
         df['pickup_date'] = df['pickup_datetime'].dt.date
@@ -153,7 +161,7 @@ if __name__ == "__main__":
         print(f"Error calculating KPIs: {e}")
         exit()
 
-    # 4. Combine KPIs into a single DataFrame
+    # Combine KPIs into a single DataFrame
     try:
         print("Combining KPIs...")
         # Start with one KPI and merge others
@@ -170,34 +178,79 @@ if __name__ == "__main__":
         print(f"Error combining KPIs: {e}")
         exit()
 
-    # 5. Format the output (CSV)
+    # Format the output as JSON instead of CSV
     try:
-        print("Formatting output as CSV...")
-        # Use io.StringIO to write to an in-memory text buffer
-        csv_buffer = io.StringIO()
-        kpi_df.to_csv(csv_buffer, index=False) # index=False to not write the DataFrame index
-
-        # Get the CSV content as a string
-        csv_content = csv_buffer.getvalue()
-        print("CSV content generated.")
+        print("Formatting output as JSON...")
+        
+        # Convert dates to string format for JSON serialization
+        kpi_df['pickup_date'] = kpi_df['pickup_date'].astype(str)
+        
+        # Structure the JSON as an object with a "daily_kpis" array and enhanced metadata
+        now = datetime.now()
+        json_structure = {
+            "metadata": {
+                "report_generated": now.isoformat(),
+                "report_timestamp": int(now.timestamp()),  # Unix timestamp for easier sorting/querying
+                "report_date": now.strftime("%Y-%m-%d"),
+                "report_time": now.strftime("%H:%M:%S"),
+                "source_table": DYNAMODB_TABLE_NAME,
+                "record_count": len(df),
+                "date_range": {
+                    "start_date": str(df['pickup_date'].min()) if not kpi_df.empty else None,
+                    "end_date": str(df['pickup_date'].max()) if not kpi_df.empty else None
+                },
+                "kpi_count": len(kpi_df) if not kpi_df.empty else 0
+            },
+            "daily_kpis": kpi_df.to_dict(orient='records')
+        }
+        
+        # Convert to JSON string with indentation for readability
+        json_content = json.dumps(json_structure, indent=2)
+        print("JSON content generated.")
 
     except Exception as e:
-        print(f"Error formatting output as CSV: {e}")
+        print(f"Error formatting output as JSON: {e}")
         exit()
 
-    # 6. Write to S3
+    # Write to S3
     try:
-        print(f"Uploading CSV to S3: s3://{S3_BUCKET_NAME}/{S3_OUTPUT_KEY}")
+        print(f"Uploading JSON to S3: s3://{S3_BUCKET_NAME}/{S3_OUTPUT_KEY}")
+        
+        # Add content type and additional metadata for better organization and discoverability
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=S3_OUTPUT_KEY,
-            Body=csv_content
+            Body=json_content,
+            ContentType='application/json',
+            Metadata={
+                'report-date': datetime.now().strftime("%Y-%m-%d"),
+                'source-table': DYNAMODB_TABLE_NAME,
+                'record-count': str(len(df)),
+                'report-type': 'daily-trip-kpis'
+            }
         )
-        print("Successfully uploaded KPI results to S3.")
+        
+        # write a "latest" version to a fixed path for easy access
+        latest_key = f'daily_kpis/latest/daily_trip_kpis.json'
+        s3.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=latest_key,
+            Body=json_content,
+            ContentType='application/json',
+            Metadata={
+                'report-date': datetime.now().strftime("%Y-%m-%d"),
+                'source-table': DYNAMODB_TABLE_NAME,
+                'record-count': str(len(df)),
+                'report-type': 'daily-trip-kpis',
+                'original-path': S3_OUTPUT_KEY
+            }
+        )
+        
+        print(f"Successfully uploaded KPI results to S3 at {S3_OUTPUT_KEY}")
+        print(f"Also uploaded a copy to the 'latest' path: {latest_key}")
 
     except Exception as e:
         print(f"Error uploading to S3: {e}")
         exit()
 
     print("Glue job finished.")
-
