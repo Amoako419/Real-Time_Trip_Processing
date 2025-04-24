@@ -35,7 +35,7 @@ def load_and_sort_data(start_path, end_path):
     
     return trip_start_sorted, trip_end_sorted
 
-def send_data_to_kinesis(data, stream_name, region='eu-west-1', delay=1):
+def send_data_to_kinesis(data, stream_name, region='eu-west-1', delay=0.1):
     """
     Sends individual records to Kinesis with proper separation between start and end events.
     """
