@@ -32,6 +32,9 @@ def scan_dynamodb_table(table_name):
     """
     Scans a DynamoDB table and returns all items.
     Handles pagination automatically.
+    Note: Scanning can be inefficient for large tables.
+          For very large tables, consider using Glue PySpark or
+          exporting DynamoDB data to S3 first.
     """
     print(f"Scanning DynamoDB table: {table_name}")
     items = []
@@ -86,14 +89,14 @@ def scan_dynamodb_table(table_name):
 
 # --- Main Script Logic ---
 if __name__ == "__main__":
-    # Read data from DynamoDB
+    # 1. Read data from DynamoDB
     dynamodb_items = scan_dynamodb_table(DYNAMODB_TABLE_NAME)
 
     if not dynamodb_items:
         print("No data retrieved from DynamoDB or an error occurred. Exiting.")
         exit() # Exit the script if no data
 
-    # Load data into Pandas DataFrame
+    # 2. Load data into Pandas DataFrame
     try:
         df = pd.DataFrame(dynamodb_items)
         print(f"Loaded {len(df)} items into Pandas DataFrame.")
@@ -127,7 +130,7 @@ if __name__ == "__main__":
         print(f"Error creating Pandas DataFrame or processing columns: {e}")
         exit()
 
-    # Calculate KPIs using the user's logic
+    # 3. Calculate KPIs using the user's logic
     try:
         print("Calculating KPIs...")
         df['pickup_date'] = df['pickup_datetime'].dt.date
@@ -161,7 +164,7 @@ if __name__ == "__main__":
         print(f"Error calculating KPIs: {e}")
         exit()
 
-    # Combine KPIs into a single DataFrame
+    # 4. Combine KPIs into a single DataFrame
     try:
         print("Combining KPIs...")
         # Start with one KPI and merge others
@@ -178,7 +181,7 @@ if __name__ == "__main__":
         print(f"Error combining KPIs: {e}")
         exit()
 
-    # Format the output as JSON instead of CSV
+    # 5. Format the output as JSON instead of CSV
     try:
         print("Formatting output as JSON...")
         
@@ -212,7 +215,7 @@ if __name__ == "__main__":
         print(f"Error formatting output as JSON: {e}")
         exit()
 
-    # Write to S3
+    # 6. Write to S3
     try:
         print(f"Uploading JSON to S3: s3://{S3_BUCKET_NAME}/{S3_OUTPUT_KEY}")
         
@@ -230,7 +233,7 @@ if __name__ == "__main__":
             }
         )
         
-        # write a "latest" version to a fixed path for easy access
+        # If needed, also write a "latest" version to a fixed path for easy access
         latest_key = f'daily_kpis/latest/daily_trip_kpis.json'
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
